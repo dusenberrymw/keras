@@ -15,6 +15,8 @@ try:
 except ImportError:
     import Queue as queue
 
+import tensorflow as tf
+
 from .topology import Container
 from .. import backend as K
 from .. import optimizers
@@ -642,12 +644,13 @@ class Model(Container):
         # prepare targets of model
         self.targets = []
         for i in range(len(self.outputs)):
-            shape = self.internal_output_shapes[i]
-            name = self.output_names[i]
-            self.targets.append(K.placeholder(ndim=len(shape),
-                                              name=name + '_target',
-                                              sparse=K.is_sparse(self.outputs[i]),
-                                              dtype=K.dtype(self.outputs[i])))
+            with tf.device(self.outputs[i].device):
+              shape = self.internal_output_shapes[i]
+              name = self.output_names[i]
+              self.targets.append(K.placeholder(ndim=len(shape),
+                                                name=name + '_target',
+                                                sparse=K.is_sparse(self.outputs[i]),
+                                                dtype=K.dtype(self.outputs[i])))
 
         # prepare metrics
         self.metrics = metrics
@@ -657,21 +660,22 @@ class Model(Container):
         # compute total loss
         total_loss = None
         for i in range(len(self.outputs)):
-            y_true = self.targets[i]
-            y_pred = self.outputs[i]
-            weighted_loss = weighted_losses[i]
-            sample_weight = sample_weights[i]
-            mask = masks[i]
-            loss_weight = loss_weights_list[i]
-            output_loss = weighted_loss(y_true, y_pred,
-                                        sample_weight, mask)
-            if len(self.outputs) > 1:
-                self.metrics_tensors.append(output_loss)
-                self.metrics_names.append(self.output_names[i] + '_loss')
-            if total_loss is None:
-                total_loss = loss_weight * output_loss
-            else:
-                total_loss += loss_weight * output_loss
+            with tf.device(self.outputs[i].device):
+              y_true = self.targets[i]
+              y_pred = self.outputs[i]
+              weighted_loss = weighted_losses[i]
+              sample_weight = sample_weights[i]
+              mask = masks[i]
+              loss_weight = loss_weights_list[i]
+              output_loss = weighted_loss(y_true, y_pred,
+                                          sample_weight, mask)
+              if len(self.outputs) > 1:
+                  self.metrics_tensors.append(output_loss)
+                  self.metrics_names.append(self.output_names[i] + '_loss')
+              if total_loss is None:
+                  total_loss = loss_weight * output_loss
+              else:
+                  total_loss += loss_weight * output_loss
 
         # add regularization penalties
         # and other layer-specific losses
@@ -691,37 +695,38 @@ class Model(Container):
             self.metrics_tensors.append(metric_tensor)
 
         for i in range(len(self.outputs)):
-            y_true = self.targets[i]
-            y_pred = self.outputs[i]
-            output_metrics = nested_metrics[i]
+            with tf.device(self.outputs[i].device):
+              y_true = self.targets[i]
+              y_pred = self.outputs[i]
+              output_metrics = nested_metrics[i]
 
-            for metric in output_metrics:
-                if metric == 'accuracy' or metric == 'acc':
-                    # custom handling of accuracy
-                    # (because of class mode duality)
-                    output_shape = self.internal_output_shapes[i]
-                    acc_fn = None
-                    if output_shape[-1] == 1 or self.loss_functions[i] == objectives.binary_crossentropy:
-                        # case: binary accuracy
-                        acc_fn = metrics_module.binary_accuracy
-                    elif self.loss_functions[i] == objectives.sparse_categorical_crossentropy:
-                        # case: categorical accuracy with sparse targets
-                        acc_fn = metrics_module.sparse_categorical_accuracy
-                    else:
-                        acc_fn = metrics_module.categorical_accuracy
+              for metric in output_metrics:
+                  if metric == 'accuracy' or metric == 'acc':
+                      # custom handling of accuracy
+                      # (because of class mode duality)
+                      output_shape = self.internal_output_shapes[i]
+                      acc_fn = None
+                      if output_shape[-1] == 1 or self.loss_functions[i] == objectives.binary_crossentropy:
+                          # case: binary accuracy
+                          acc_fn = metrics_module.binary_accuracy
+                      elif self.loss_functions[i] == objectives.sparse_categorical_crossentropy:
+                          # case: categorical accuracy with sparse targets
+                          acc_fn = metrics_module.sparse_categorical_accuracy
+                      else:
+                          acc_fn = metrics_module.categorical_accuracy
 
-                    append_metric(i, 'acc', acc_fn(y_true, y_pred))
-                else:
-                    metric_fn = metrics_module.get(metric)
-                    metric_result = metric_fn(y_true, y_pred)
+                      append_metric(i, 'acc', acc_fn(y_true, y_pred))
+                  else:
+                      metric_fn = metrics_module.get(metric)
+                      metric_result = metric_fn(y_true, y_pred)
 
-                    if not isinstance(metric_result, dict):
-                        metric_result = {
-                            metric_fn.__name__: metric_result
-                        }
+                      if not isinstance(metric_result, dict):
+                          metric_result = {
+                              metric_fn.__name__: metric_result
+                          }
 
-                    for name, tensor in six.iteritems(metric_result):
-                        append_metric(i, name, tensor)
+                      for name, tensor in six.iteritems(metric_result):
+                          append_metric(i, name, tensor)
 
         # prepare gradient updates and state updates
         self.total_loss = total_loss
