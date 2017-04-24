@@ -15,6 +15,8 @@ try:
 except ImportError:
     import Queue as queue
 
+import tensorflow as tf
+
 from .topology import Container
 from .. import backend as K
 from .. import optimizers
@@ -806,23 +808,24 @@ class Model(Container):
                                      'Only expected the following keys: ' +
                                      str(self.output_names))
             for i, name in enumerate(self.output_names):
-                if i in skip_indices:
-                    weight = None
-                    sample_weight_modes.append(None)
-                else:
-                    if name not in sample_weight_mode:
-                        raise ValueError('Output "' + name +
-                                         '" missing from sample_weight_modes '
-                                         'dictionary')
-                    if sample_weight_mode.get(name) == 'temporal':
-                        weight = K.placeholder(ndim=2,
-                                               name=name + '_sample_weights')
-                        sample_weight_modes.append('temporal')
-                    else:
-                        weight = K.placeholder(ndim=1,
-                                               name=name + '_sample_weights')
+                with tf.device(self.outputs[i].device):
+                    if i in skip_indices:
+                        weight = None
                         sample_weight_modes.append(None)
-                sample_weights.append(weight)
+                    else:
+                        if name not in sample_weight_mode:
+                            raise ValueError('Output "' + name +
+                                             '" missing from sample_weight_modes '
+                                             'dictionary')
+                        if sample_weight_mode.get(name) == 'temporal':
+                            weight = K.placeholder(ndim=2,
+                                                   name=name + '_sample_weights')
+                            sample_weight_modes.append('temporal')
+                        else:
+                            weight = K.placeholder(ndim=1,
+                                                   name=name + '_sample_weights')
+                            sample_weight_modes.append(None)
+                    sample_weights.append(weight)
         elif isinstance(sample_weight_mode, list):
             if len(sample_weight_mode) != len(self.outputs):
                 raise ValueError('When passing a list as sample_weight_mode, '
@@ -832,37 +835,39 @@ class Model(Container):
                                  'sample_weight_mode=' +
                                  str(sample_weight_mode))
             for i in range(len(self.output_names)):
-                if i in skip_indices:
-                    weight = None
-                    sample_weight_modes.append(None)
-                else:
-                    mode = sample_weight_mode[i]
-                    name = self.output_names[i]
-                    if mode == 'temporal':
-                        weight = K.placeholder(ndim=2,
-                                               name=name + '_sample_weights')
-                        sample_weight_modes.append('temporal')
-                    else:
-                        weight = K.placeholder(ndim=1,
-                                               name=name + '_sample_weights')
+                with tf.device(self.outputs[i].device):
+                    if i in skip_indices:
+                        weight = None
                         sample_weight_modes.append(None)
-                sample_weights.append(weight)
+                    else:
+                        mode = sample_weight_mode[i]
+                        name = self.output_names[i]
+                        if mode == 'temporal':
+                            weight = K.placeholder(ndim=2,
+                                                   name=name + '_sample_weights')
+                            sample_weight_modes.append('temporal')
+                        else:
+                            weight = K.placeholder(ndim=1,
+                                                   name=name + '_sample_weights')
+                            sample_weight_modes.append(None)
+                    sample_weights.append(weight)
         else:
             for i, name in enumerate(self.output_names):
-                if i in skip_indices:
-                    sample_weight_modes.append(None)
-                    sample_weights.append(None)
-                else:
-                    if sample_weight_mode == 'temporal':
-                        sample_weights.append(
-                            K.placeholder(ndim=2,
-                                          name=name + '_sample_weights'))
-                        sample_weight_modes.append('temporal')
-                    else:
-                        sample_weights.append(
-                            K.placeholder(ndim=1,
-                                          name=name + '_sample_weights'))
+                with tf.device(self.outputs[i].device):
+                    if i in skip_indices:
                         sample_weight_modes.append(None)
+                        sample_weights.append(None)
+                    else:
+                        if sample_weight_mode == 'temporal':
+                            sample_weights.append(
+                                K.placeholder(ndim=2,
+                                              name=name + '_sample_weights'))
+                            sample_weight_modes.append('temporal')
+                        else:
+                            sample_weights.append(
+                                K.placeholder(ndim=1,
+                                              name=name + '_sample_weights'))
+                            sample_weight_modes.append(None)
         self.sample_weight_modes = sample_weight_modes
         self._feed_sample_weight_modes = []
         for i in range(len(self.outputs)):
@@ -873,17 +878,18 @@ class Model(Container):
         self.targets = []
         self._feed_targets = []
         for i in range(len(self.outputs)):
-            if i in skip_indices:
-                self.targets.append(None)
-            else:
-                shape = self.internal_output_shapes[i]
-                name = self.output_names[i]
-                target = K.placeholder(ndim=len(shape),
-                                       name=name + '_target',
-                                       sparse=K.is_sparse(self.outputs[i]),
-                                       dtype=K.dtype(self.outputs[i]))
-                self.targets.append(target)
-                self._feed_targets.append(target)
+            with tf.device(self.outputs[i].device):
+                if i in skip_indices:
+                    self.targets.append(None)
+                else:
+                    shape = self.internal_output_shapes[i]
+                    name = self.output_names[i]
+                    target = K.placeholder(ndim=len(shape),
+                                           name=name + '_target',
+                                           sparse=K.is_sparse(self.outputs[i]),
+                                           dtype=K.dtype(self.outputs[i]))
+                    self.targets.append(target)
+                    self._feed_targets.append(target)
 
         # Prepare metrics.
         self.metrics = metrics
@@ -893,23 +899,26 @@ class Model(Container):
         # Compute total loss.
         total_loss = None
         for i in range(len(self.outputs)):
-            if i in skip_indices:
-                continue
-            y_true = self.targets[i]
-            y_pred = self.outputs[i]
-            weighted_loss = weighted_losses[i]
-            sample_weight = sample_weights[i]
-            mask = masks[i]
-            loss_weight = loss_weights_list[i]
-            output_loss = weighted_loss(y_true, y_pred,
-                                        sample_weight, mask)
-            if len(self.outputs) > 1:
-                self.metrics_tensors.append(output_loss)
-                self.metrics_names.append(self.output_names[i] + '_loss')
-            if total_loss is None:
-                total_loss = loss_weight * output_loss
-            else:
-                total_loss += loss_weight * output_loss
+            with tf.device(self.outputs[i].device):
+                if i in skip_indices:
+                    continue
+                y_true = self.targets[i]
+                y_pred = self.outputs[i]
+                weighted_loss = weighted_losses[i]
+                sample_weight = sample_weights[i]
+                mask = masks[i]
+                loss_weight = loss_weights_list[i]
+                output_loss = weighted_loss(y_true, y_pred,
+                                            sample_weight, mask)
+                if len(self.outputs) > 1:
+                    self.metrics_tensors.append(output_loss)
+                    self.metrics_names.append(self.output_names[i] + '_loss')
+                # NOTE: This `total_loss` is a problem because it coalesces all
+                # losses into a single op, and thus onto a single device...
+                if total_loss is None:
+                    total_loss = loss_weight * output_loss
+                else:
+                    total_loss += loss_weight * output_loss
         if total_loss is None:
             if not self.losses:
                 raise RuntimeError('The model cannot be compiled '
@@ -933,39 +942,41 @@ class Model(Container):
             self.metrics_names.append(metric_name)
             self.metrics_tensors.append(metric_tensor)
 
+        # Append metrics
         for i in range(len(self.outputs)):
-            if i in skip_indices:
-                continue
-            y_true = self.targets[i]
-            y_pred = self.outputs[i]
-            output_metrics = nested_metrics[i]
-            for metric in output_metrics:
-                if metric == 'accuracy' or metric == 'acc':
-                    # custom handling of accuracy
-                    # (because of class mode duality)
-                    output_shape = self.internal_output_shapes[i]
-                    acc_fn = None
-                    if (output_shape[-1] == 1 or
-                       self.loss_functions[i] == losses.binary_crossentropy):
-                        # case: binary accuracy
-                        acc_fn = metrics_module.binary_accuracy
-                    elif self.loss_functions[i] == losses.sparse_categorical_crossentropy:
-                        # case: categorical accuracy with sparse targets
-                        acc_fn = metrics_module.sparse_categorical_accuracy
-                    else:
-                        acc_fn = metrics_module.categorical_accuracy
+            with tf.device(self.outputs[i].device):
+                if i in skip_indices:
+                    continue
+                y_true = self.targets[i]
+                y_pred = self.outputs[i]
+                output_metrics = nested_metrics[i]
+                for metric in output_metrics:
+                    if metric == 'accuracy' or metric == 'acc':
+                        # custom handling of accuracy
+                        # (because of class mode duality)
+                        output_shape = self.internal_output_shapes[i]
+                        acc_fn = None
+                        if (output_shape[-1] == 1 or
+                           self.loss_functions[i] == losses.binary_crossentropy):
+                            # case: binary accuracy
+                            acc_fn = metrics_module.binary_accuracy
+                        elif self.loss_functions[i] == losses.sparse_categorical_crossentropy:
+                            # case: categorical accuracy with sparse targets
+                            acc_fn = metrics_module.sparse_categorical_accuracy
+                        else:
+                            acc_fn = metrics_module.categorical_accuracy
 
-                    masked_fn = _masked_objective(acc_fn)
-                    append_metric(i, 'acc', masked_fn(y_true, y_pred, mask=masks[i]))
-                else:
-                    metric_fn = metrics_module.get(metric)
-                    masked_metric_fn = _masked_objective(metric_fn)
-                    metric_result = masked_metric_fn(y_true, y_pred, mask=masks[i])
-                    metric_result = {
-                        metric_fn.__name__: metric_result
-                    }
-                    for name, tensor in six.iteritems(metric_result):
-                        append_metric(i, name, tensor)
+                        masked_fn = _masked_objective(acc_fn)
+                        append_metric(i, 'acc', masked_fn(y_true, y_pred, mask=masks[i]))
+                    else:
+                        metric_fn = metrics_module.get(metric)
+                        masked_metric_fn = _masked_objective(metric_fn)
+                        metric_result = masked_metric_fn(y_true, y_pred, mask=masks[i])
+                        metric_result = {
+                            metric_fn.__name__: metric_result
+                        }
+                        for name, tensor in six.iteritems(metric_result):
+                            append_metric(i, name, tensor)
 
         # Prepare gradient updates and state updates.
         self.total_loss = total_loss
